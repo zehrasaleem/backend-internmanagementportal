@@ -2,12 +2,19 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import "dotenv/config";
+import mongoose from "mongoose"; // For MongoDB connection events
 import { connectMongo } from "./db/mongo.js";
+
+// 🧩 Route Imports
 import googleAuth from "./routes/googleAuth.js";
 import userRoutes from "./routes/UserRoutes.js";
 import authRoutes from "./routes/auth.routes.js";
-import taskRoutes from "./routes/task.routes.js"; // ✅ tasks
+import taskRoutes from "./routes/task.routes.js";
+import projectRoutes from "./routes/project.routes.js"; // ✅ Project management routes
 
+import { fixProjectIndexes } from "./utils/fixIndexes.js";
+
+// ---------- Initialize Express ----------
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -21,26 +28,31 @@ app.use(
 );
 app.use(express.json());
 
-// ---------- Routes ----------
-// Prefix all routes with /api to match frontend
-app.use("/api/auth", authRoutes);      // login, register, OTP
-app.use("/api/users", userRoutes);     // user management
-app.use("/api/tasks", taskRoutes);     // task management
-app.use("/api/google", googleAuth);    // Google OAuth (optional / separate)
+// ---------- API Routes ----------
+app.use("/api/auth", authRoutes);       // Authentication
+app.use("/api/users", userRoutes);      // User management
+app.use("/api/tasks", taskRoutes);      // Task management
+app.use("/api/projects", projectRoutes); // ✅ Project management
+app.use("/api/google", googleAuth);     // Google OAuth (optional)
 
-// Test route
+// ---------- Health Check ----------
 app.get("/", (req, res) => {
-  res.status(200).send("Backend is running 🚀");
+  res.status(200).send("✅ Backend is running 🚀");
 });
 
 // ---------- Start Server AFTER DB connects ----------
 let server;
 
 connectMongo()
-  .then(() => {
+  .then(async () => {
+    console.log("✅ MongoDB connected successfully.");
+
+    // ✅ Fix old indexes safely (useful if unique constraints changed)
+    await fixProjectIndexes();
+
     if (!server) {
       server = app.listen(PORT, () => {
-        console.log(`✅ Server running at http://localhost:${PORT}`);
+        console.log(`🚀 Server running at http://localhost:${PORT}`);
       });
     }
   })
@@ -49,13 +61,16 @@ connectMongo()
     process.exit(1);
   });
 
-// ---------- Graceful shutdown ----------
+// ---------- Graceful Shutdown ----------
 const shutdown = () => {
-  console.log("Shutting down server...");
+  console.log("🛑 Shutting down server...");
   if (server) {
     server.close(() => {
-      console.log("HTTP server closed");
-      process.exit(0);
+      console.log("✅ HTTP server closed.");
+      mongoose.connection.close(false, () => {
+        console.log("✅ MongoDB connection closed.");
+        process.exit(0);
+      });
     });
   } else {
     process.exit(0);
