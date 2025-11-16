@@ -8,20 +8,21 @@ import User from "../models/User.js";
 const router = express.Router();
 const isProd = process.env.NODE_ENV === "production";
 
-// ✅ Debug route to confirm router is loaded
+/* ==============================
+   0) Debug route
+============================== */
 router.get("/test", (req, res) => {
   res.send("✅ googleAuth router is connected");
 });
 
-
-/* ================================
+/* ==============================
    1) Start Google OAuth
-================================ */
+============================== */
 router.get("/", (req, res) => {
   const redirectUrl =
     `https://accounts.google.com/o/oauth2/v2/auth?` +
     `client_id=${process.env.GOOGLE_CLIENT_ID}&` +
-    `redirect_uri=http://localhost:5000/api/google/callback&` + // <-- updated
+    `redirect_uri=http://localhost:5000/api/google/callback&` +
     `response_type=code&` +
     `scope=openid%20email%20profile&` +
     `access_type=offline`;
@@ -29,9 +30,9 @@ router.get("/", (req, res) => {
   res.redirect(redirectUrl);
 });
 
-/* =========================================================
+/* ==============================
    2) Google callback → verify domain → set signup cookie
-========================================================= */
+============================== */
 router.get("/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("No code returned from Google");
@@ -44,7 +45,7 @@ router.get("/callback", async (req, res) => {
         code,
         client_id: process.env.GOOGLE_CLIENT_ID,
         client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: "http://localhost:5000/api/google/callback", // <-- updated
+        redirect_uri: "http://localhost:5000/api/google/callback",
         grant_type: "authorization_code",
       }),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
@@ -64,7 +65,7 @@ router.get("/callback", async (req, res) => {
       return res.redirect(`${FRONTEND_URL}/signup-fail?${params.toString()}`);
     }
 
-    // Short-lived signup token (cookie)
+    // Create signup token (cookie)
     const signupToken = jwt.sign(
       {
         email: userInfo.email,
@@ -86,32 +87,35 @@ router.get("/callback", async (req, res) => {
     const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
     return res.redirect(`${FRONTEND_URL}/google-signup`);
   } catch (err) {
-    console.error("❌ Google OAuth error:", err.response?.data || err.message);
+    console.error("❌ Google OAuth error:", err.response?.data || err.message, err.stack);
     return res.status(500).send("Google login failed");
   }
 });
 
-/* =========================================================
-   3) Prefill name/email from the signup cookie
-========================================================= */
+/* ==============================
+   3) Prefill name/email from signup cookie
+============================== */
 router.get("/signup-info", (req, res) => {
   try {
     const token = req.cookies?.signup_token;
     if (!token) return res.status(401).json({ message: "Signup session expired" });
+
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     return res.json({ email: payload.email, name: payload.name, picture: payload.picture });
-  } catch {
+  } catch (err) {
+    console.error("Signup info error:", err.message);
     return res.status(401).json({ message: "Signup session expired" });
   }
 });
 
-/* =========================================================
-   4) Complete signup (create/update user) and return JWT
-========================================================= */
+/* ==============================
+   4) Complete signup (create/update user)
+============================== */
 router.post("/complete", async (req, res) => {
   try {
     const token = req.cookies?.signup_token;
     if (!token) return res.status(401).json({ message: "Signup session expired" });
+
     const idp = jwt.verify(token, process.env.JWT_SECRET); // { email, name, picture, googleId }
 
     const {
@@ -125,9 +129,15 @@ router.post("/complete", async (req, res) => {
       dateOfJoining,
     } = req.body;
 
+    // Validate essential fields
+    if (!fullName || !role) {
+      return res.status(400).json({ message: "Full name and role are required" });
+    }
+
     let user = await User.findOne({ email: idp.email });
 
     if (!user) {
+      // Create new user
       user = new User({
         googleId: idp.googleId,
         email: idp.email,
@@ -137,19 +147,32 @@ router.post("/complete", async (req, res) => {
         role,
       });
     } else {
+      // Update existing user
       user.name = fullName || user.name || idp.name;
       user.role = role || user.role || "student";
     }
 
-    user.phoneNumber = phoneNumber;
+    user.phoneNumber = phoneNumber || undefined;
 
     if (user.role === "student") {
-      user.discipline = discipline;
-      user.batch = batch;
-      user.rollNo = rollNo;
-      user.semester = semester;
-      user.dateOfJoining = dateOfJoining ? new Date(dateOfJoining) : undefined;
+      user.discipline = discipline || undefined;
+      user.batch = batch || undefined;
+      user.rollNo = rollNo || undefined;
+      user.semester = semester || undefined;
+
+      if (dateOfJoining) {
+        const doj = new Date(dateOfJoining);
+        if (!isNaN(doj.getTime())) {
+          user.dateOfJoining = doj;
+        } else {
+          console.warn(`Invalid dateOfJoining received: ${dateOfJoining}`);
+          user.dateOfJoining = undefined;
+        }
+      } else {
+        user.dateOfJoining = undefined;
+      }
     } else {
+      // Admin: clear student-only fields
       user.discipline = undefined;
       user.batch = undefined;
       user.rollNo = undefined;
@@ -159,14 +182,14 @@ router.post("/complete", async (req, res) => {
 
     await user.save();
 
-    // Issue JWT
+    // Issue JWT for app
     const appToken = jwt.sign(
       { id: user._id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
 
-    // Clear cookie
+    // Clear signup cookie
     res.clearCookie("signup_token", {
       httpOnly: true,
       sameSite: isProd ? "none" : "lax",
@@ -174,9 +197,9 @@ router.post("/complete", async (req, res) => {
     });
 
     return res.json({ ok: true, role: user.role, user, token: appToken });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ message: "Could not complete signup" });
+  } catch (err) {
+    console.error("Google signup complete error:", err.message, err.stack);
+    return res.status(500).json({ message: "Could not complete signup", error: err.message });
   }
 });
 

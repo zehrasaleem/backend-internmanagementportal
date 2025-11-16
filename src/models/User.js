@@ -1,48 +1,66 @@
-// src/models/User.js
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
-const userSchema = new mongoose.Schema(
-  {
-    name: { type: String, trim: true },
-    email: { type: String, required: true, unique: true, lowercase: true },
-    password: {
-      type: String,
-      required: function () { return !this.googleId; },
-      select: false,
+/* ------------------------- USER SCHEMA ------------------------- */
+const userSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: function () {
+      // Name required only after verification or signup completion
+      return this.isVerified;
     },
-    googleId: { type: String },
-
-    role: { type: String, enum: ["student", "admin"], default: "student" },
-    isVerified: { type: Boolean, default: false },
-
-    // 🔽 add these so they’re saved in MongoDB
-    discipline: { type: String },
-    batch: { type: String },
-    rollNo: { type: String },
-    phoneNumber: { type: String },
-    semester: { type: String },          // keep string for flexibility
-    dateOfJoining: { type: Date },
-
-    picture: { type: String },
-    otp: { type: String },
-    otpExpires: { type: Date },
   },
-  { timestamps: true }
-);
+  email: { type: String, required: true, unique: true },
+  password: { type: String }, // optional now for Google OAuth users
+  googleId: { type: String }, // optional for Google OAuth
+  role: { type: String, default: "student" }, // student, admin, etc.
+  picture: { type: String }, // user profile picture
+  isVerified: { type: Boolean, default: false },
+  otp: String,
+  otpExpires: Date,
+  // Student-specific fields
+  discipline: String,
+  batch: String,
+  rollNo: String,
+  phoneNumber: String,
+  semester: String,
+  dateOfJoining: Date,
+});
 
-// hash password if set/changed
+/* ------------------------- HASH PASSWORD ------------------------- */
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password") || !this.password) return next();
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
+  this.password = await bcrypt.hash(this.password, 10);
   next();
 });
 
-userSchema.methods.comparePassword = function (candidate) {
+/* ------------------------- COMPARE PASSWORD ------------------------- */
+userSchema.methods.comparePassword = async function (candidatePassword) {
   if (!this.password) return false;
-  return bcrypt.compare(candidate, this.password);
+  return bcrypt.compare(candidatePassword, this.password);
 };
 
+/* ------------------------- USER MODEL ------------------------- */
 const User = mongoose.model("User", userSchema);
+
+/* ------------------- GET ALL STUDENTS (FOR ADMIN) ------------------- */
+export const getAllStudents = async (req, res) => {
+  try {
+    const students = await User.find({ role: "student" }).select(
+      "name email _id discipline batch rollNo semester dateOfJoining"
+    );
+    res.status(200).json({
+      success: true,
+      students,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching students:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch students",
+    });
+  }
+};
+
+/* ------------------------- EXPORT ------------------------- */
 export default User;

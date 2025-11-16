@@ -1,6 +1,6 @@
 // src/routes/user.routes.js
 import express from "express";
-import User from "../models/User.js";
+import User, { getAllStudents } from "../models/User.js";
 import { sendOtpEmail } from "../services/mailService.js";
 
 const router = express.Router();
@@ -26,25 +26,23 @@ router.post("/signup", async (req, res) => {
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Create new user (password hashed by model pre-save hook)
+    // Create new user (password hashed automatically in schema)
     user = new User({
       name,
       email: normEmail,
-      password, // raw here; model hashes automatically
+      password,
       isVerified: false,
       otp,
-      otpExpires: Date.now() + 10 * 60 * 1000, // 10 minutes
+      otpExpires: Date.now() + 10 * 60 * 1000, // 10 mins
     });
     await user.save();
 
-    // Send OTP to user's inbox
+    // Send OTP via email
     try {
       await sendOtpEmail(normEmail, otp);
       console.log(`📧 OTP emailed to ${normEmail}`);
     } catch (mailErr) {
       console.error("Email send failed:", mailErr?.message || mailErr);
-      // Optional fallback in dev:
-      // console.log(`(Fallback) OTP for ${normEmail}: ${otp}`);
       return res.status(500).json({ error: "Signup created, but failed to send OTP email." });
     }
 
@@ -91,22 +89,16 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ message: `Email must be a ${ALLOWED_DOMAIN} address` });
     }
 
-    // password is select:false in schema — include it for comparison
     const user = await User.findOne({ email: normEmail }).select("+password");
-    if (!user) {
-      return res.status(400).json({ message: "Invalid credentials" });
-    }
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
     const ok = await user.comparePassword(password);
-    if (!ok) {
-      return res.status(400).json({ message: "Invalid credentials" });
-    }
+    if (!ok) return res.status(400).json({ message: "Invalid credentials" });
 
     if (!user.isVerified) {
       return res.status(400).json({ message: "Please verify your email first" });
     }
 
-    // sanitize response
     const userObj = user.toObject();
     delete userObj.password;
 
@@ -127,5 +119,8 @@ router.get("/", async (_req, res) => {
     return res.status(500).json({ error: "Failed to fetch users" });
   }
 });
+
+router.get("/students", getAllStudents);
+
 
 export default router;

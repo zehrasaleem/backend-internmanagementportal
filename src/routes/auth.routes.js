@@ -76,14 +76,17 @@ router.post("/request-otp", async (req, res) => {
     }
 
     if (!user) {
-      user = new User({
-        email,
-        password,       // raw; model pre-save will hash
-        isVerified: false,
-        otp,
-        otpExpires,
-      });
-    } else {
+  user = new User({
+    name: email.split("@")[0],
+    email,
+    password,
+    isVerified: false,
+    otp,
+    otpExpires,
+    role: "student",
+  });
+}
+ else {
       user.password = password; // raw; model will hash
       user.otp = otp;
       user.otpExpires = otpExpires;
