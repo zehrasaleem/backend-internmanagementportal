@@ -24,11 +24,16 @@ export const createProject = async (req, res) => {
       return res.status(409).json({ message: "A project with this title already exists" });
     }
 
-    // Validate teamLead if provided
+    // ✅ Validate teamLead if provided (ROLE CHECK ADDED)
     let leadId = null;
     if (teamLead) {
-      const leadExists = await User.exists({ _id: teamLead });
-      if (!leadExists) return res.status(404).json({ message: "Team lead not found" });
+      const lead = await User.findById(teamLead);
+      if (!lead) return res.status(404).json({ message: "Team lead not found" });
+
+      if (lead.role !== "student") {
+        return res.status(400).json({ message: "Only students can be assigned as Team Lead" });
+      }
+
       leadId = teamLead;
     }
 
@@ -112,10 +117,14 @@ export const updateProject = async (req, res) => {
       updates.title = updates.title.trim();
     }
 
-    // Validate teamLead if provided
+    // ✅ Validate teamLead if provided (ROLE CHECK ADDED)
     if (updates.teamLead) {
-      const leadExists = await User.exists({ _id: updates.teamLead });
-      if (!leadExists) return res.status(404).json({ message: "Team lead not found" });
+      const lead = await User.findById(updates.teamLead);
+      if (!lead) return res.status(404).json({ message: "Team lead not found" });
+
+      if (lead.role !== "student") {
+        return res.status(400).json({ message: "Only students can be assigned as Team Lead" });
+      }
     }
 
     const project = await Project.findByIdAndUpdate(id, updates, {
@@ -150,6 +159,20 @@ export const deleteProject = async (req, res) => {
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
+// 🔵 GET PROJECTS WHERE CURRENT USER IS TEAM LEAD
+export const getMyLeadProjects = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const projects = await Project.find({ teamLead: userId })
+      .populate("assignedTo", "name email")
+      .populate("teamLead", "name email");
+
+    res.status(200).json(projects);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch team lead projects" });
+  }
+};
 
 // 🟤 ASSIGN / UNASSIGN INTERN
 export const modifyAssignees = async (req, res) => {
@@ -160,8 +183,13 @@ export const modifyAssignees = async (req, res) => {
     const { userId, action } = req.body;
     if (!userId) return res.status(400).json({ message: "userId is required" });
 
-    const userExists = await User.exists({ _id: userId });
-    if (!userExists) return res.status(404).json({ message: "User not found" });
+    // ✅ ROLE CHECK ADDED
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (user.role !== "student") {
+      return res.status(400).json({ message: "Only students can be assigned to projects" });
+    }
 
     const project = await Project.findById(id);
     if (!project) return res.status(404).json({ message: "Project not found" });
