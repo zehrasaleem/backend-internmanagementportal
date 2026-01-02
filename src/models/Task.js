@@ -2,12 +2,10 @@ import mongoose from "mongoose";
 
 const taskSchema = new mongoose.Schema(
   {
-    // 📘 Basic Task Info
     title: { type: String, required: true },
     description: { type: String, default: "" },
     subHeading: { type: String, default: "" },
 
-    // 👥 Multiple students can be assigned to one task
     assignedTo: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -16,36 +14,47 @@ const taskSchema = new mongoose.Schema(
       },
     ],
 
-    // 📝 Admin who assigned the task
     assignedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
     },
 
-    // 📂 Optional project name or reference
-    project: { type: String, default: "" },
-
-    // 📅 Due Date & Status
-    dueDate: { type: Date, required: true },
-    status: {
-      type: String,
-      enum: ["Assigned", "In Progress", "Completed", "Pending Approval"], // added Pending Approval
-      default: "Assigned",
+    project: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Project",
+      required: true,
     },
 
+    dueDate: { type: Date, required: true },
+
+    status: {
+      type: String,
+      enum: [
+        "Assigned",
+        "In Progress",
+        "Completed",
+        "Pending Approval",
+        "Pending Start Approval",
+        "Pending TL Approval",
+        "Pending Admin Approval",
+        "Rejected",
+        "Missed",
+      ],
+      default: "Assigned",
+    },
     progress: {
       type: Number,
-      default: 0, // 0–100
+      default: 0,
       min: 0,
       max: 100,
     },
+     adminApproved: { type: Boolean, default: false },
 
-    // ⏱️ Time tracking fields
-    startDate: { type: Date, default: null }, // when task started
-    completedDate: { type: Date, default: null }, // when task completed
+    startDate: { type: Date, default: null },
+    completedDate: { type: Date, default: null },
   },
-  { timestamps: true } // adds createdAt & updatedAt automatically
+  { timestamps: true }
 );
 
 export default mongoose.model("Task", taskSchema);

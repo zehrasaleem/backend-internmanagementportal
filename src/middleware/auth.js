@@ -2,8 +2,10 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
 export const protect = async (req, res, next) => {
+  // console.log("Headers Received:" , req.headers);
+  const authHeader = req.headers.authorization; 
   try {
-    const authHeader = req.headers.authorization;
+    // const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
       return res.status(401).json({ message: "No token provided" });
     }
