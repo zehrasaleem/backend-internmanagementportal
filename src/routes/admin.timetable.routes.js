@@ -400,6 +400,19 @@ router.post("/schedule", auth, async (req, res) => {
    It deletes only the exact selected date/time.
    Other projected meeting dates remain unchanged.
 ====================================================== */
+/* ================= CANCEL MEETING FOR ONE DATE ONLY =================
+   Deletion is NOT a projection.
+   It cancels only the exact selected date/time.
+
+   If an exact meeting exists for that date:
+   - convert it to free.
+
+   If the meeting is only being shown as a projected meeting:
+   - create an exact free slot for that date.
+   - that exact free slot overrides the projected meeting only for this date.
+
+   Other projected meeting dates remain unchanged.
+====================================================== */
 router.post("/cancel-meeting", auth, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -444,24 +457,51 @@ router.post("/cancel-meeting", auth, async (req, res) => {
 
     const exactMeeting = sameSlots.find((slot) => slot.status === "meeting");
 
-    if (!exactMeeting) {
-      return res.status(400).json({
-        message: "No meeting found for this exact date and time",
+    if (exactMeeting) {
+      exactMeeting.status = "free";
+      exactMeeting.label = "";
+      exactMeeting.meetingDate = "";
+      exactMeeting.assignedBy = undefined;
+
+      removeDuplicateSlotsForExactDate(
+        timetable,
+        targetDay,
+        targetTime,
+        targetDate,
+        exactMeeting._id
+      );
+    } else {
+      if (
+        !baseSlot ||
+        baseSlot.status !== "meeting" ||
+        baseSlot.day !== targetDay ||
+        baseSlot.time !== targetTime
+      ) {
+        return res.status(400).json({
+          message: "No meeting found for this exact date and time",
+        });
+      }
+
+      timetable.slots.push({
+        day: targetDay,
+        time: targetTime,
+        date: targetDate,
+        status: "free",
+        label: "",
+        meetingDate: "",
+        assignedBy: undefined,
       });
+
+      const overrideSlot = timetable.slots[timetable.slots.length - 1];
+
+      removeDuplicateSlotsForExactDate(
+        timetable,
+        targetDay,
+        targetTime,
+        targetDate,
+        overrideSlot._id
+      );
     }
-
-    exactMeeting.status = "free";
-    exactMeeting.label = "";
-    exactMeeting.meetingDate = "";
-    exactMeeting.assignedBy = undefined;
-
-    removeDuplicateSlotsForExactDate(
-      timetable,
-      targetDay,
-      targetTime,
-      targetDate,
-      exactMeeting._id
-    );
 
     await timetable.save();
 
