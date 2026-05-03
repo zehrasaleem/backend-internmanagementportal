@@ -41,36 +41,14 @@ const getTimeRange = (time) => {
 };
 
 const getCurrentDateTimeInTimezone = () => {
-  const now = new Date();
-
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: ATTENDANCE_TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-
-  const parts = formatter.formatToParts(now);
-
-  const get = (type) => parts.find((p) => p.type === type)?.value;
-
-  const year = get("year");
-  const month = get("month");
-  const day = get("day");
-
-  let hour = Number(get("hour"));
-  const minute = Number(get("minute"));
-
-  if (hour === 24) hour = 0;
+  // LOCAL TESTING ONLY:
+  // 17 August 2026, 08:45 AM in Asia/Karachi
+  const now = new Date("2026-08-17T03:45:00.000Z");
 
   return {
     now,
-    dateKey: `${year}-${month}-${day}`,
-    minutes: hour * 60 + minute,
+    dateKey: "2026-08-17",
+    minutes: 8 * 60 + 45,
   };
 };
 
