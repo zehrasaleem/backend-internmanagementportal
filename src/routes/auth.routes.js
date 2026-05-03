@@ -50,6 +50,52 @@ router.get("/me", async (req, res) => {
 });
 
 /* ===========================
+   PUT /auth/me
+   Update logged-in student profile
+=========================== */
+router.put("/me", async (req, res) => {
+  try {
+    const auth = req.headers.authorization || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+
+    if (!token) {
+      return res.status(401).json({ message: "Missing token" });
+    }
+
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+
+    const user = await User.findById(payload.id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const { name, phoneNumber, discipline, semester, rollNo } = req.body;
+
+    user.name = name ?? user.name;
+    user.phoneNumber = phoneNumber ?? user.phoneNumber;
+    user.discipline = discipline ?? user.discipline;
+    user.semester = semester ?? user.semester;
+    user.rollNo = rollNo ?? user.rollNo;
+
+    await user.save();
+
+    const userObj = user.toObject();
+    delete userObj.password;
+    delete userObj.otp;
+    delete userObj.otpExpires;
+
+    return res.json({
+      success: true,
+      message: "Profile updated successfully",
+      user: userObj,
+    });
+  } catch (err) {
+    console.error("PUT /auth/me error:", err.message);
+    return res.status(401).json({ message: "Invalid or expired token" });
+  }
+});
+
+/* ===========================
    POST /auth/request-otp
 =========================== */
 router.post("/request-otp", async (req, res) => {

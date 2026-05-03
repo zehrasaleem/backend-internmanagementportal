@@ -1,6 +1,12 @@
 // src/routes/user.routes.js
 import express from "express";
+import mongoose from "mongoose";
 import User, { getAllStudents } from "../models/User.js";
+import Project from "../models/project.js";
+import Task from "../models/Task.js";
+import Timetable from "../models/timetable.js";
+import Attendance from "../models/Attendance.js";
+import protect from "../middleware/auth.js";
 import { sendOtpEmail } from "../services/mailService.js";
 
 const router = express.Router();
@@ -122,5 +128,131 @@ router.get("/", async (_req, res) => {
 
 router.get("/students", getAllStudents);
 
+/* ---------------------- GET SINGLE STUDENT PROFILE ---------------------- */
+router.get("/students/:id", protect, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only admin can view intern profiles",
+      });
+    }
+
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid intern id",
+      });
+    }
+
+    const student = await User.findOne({ _id: id, role: "student" }).select(
+      "_id name email picture discipline batch rollNo phoneNumber semester dateOfJoining"
+    );
+
+    if (!student) {
+      return res.status(404).json({
+        success: false,
+        message: "Intern not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      student,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching intern profile:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch intern profile",
+    });
+  }
+});
+
+/* ---------------------- REMOVE INTERN FROM SYSTEM ---------------------- */
+router.delete("/students/:id", protect, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only admin can remove interns",
+      });
+    }
+
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid intern id",
+      });
+    }
+
+    const intern = await User.findOne({ _id: id, role: "student" });
+
+    if (!intern) {
+      return res.status(404).json({
+        success: false,
+        message: "Intern not found",
+      });
+    }
+
+    // Remove intern from projects only. Do not delete projects.
+    const projectUpdateResult = await Project.updateMany(
+      { assignedTo: id },
+      { $pull: { assignedTo: id } }
+    );
+
+    // If a task has only this intern, delete the task.
+    // If a task has multiple interns, only remove this intern from assignedTo.
+    const tasksWithIntern = await Task.find({ assignedTo: id }).select("_id assignedTo");
+
+    const taskIdsToDelete = tasksWithIntern
+      .filter((task) => task.assignedTo.length <= 1)
+      .map((task) => task._id);
+
+    let deletedTasksCount = 0;
+
+    if (taskIdsToDelete.length > 0) {
+      const deletedTasks = await Task.deleteMany({
+        _id: { $in: taskIdsToDelete },
+      });
+      deletedTasksCount = deletedTasks.deletedCount || 0;
+    }
+
+    const taskUpdateResult = await Task.updateMany(
+      {
+        assignedTo: id,
+        _id: { $nin: taskIdsToDelete },
+      },
+      { $pull: { assignedTo: id } }
+    );
+
+    const timetableDeleteResult = await Timetable.deleteMany({ student: id });
+    const attendanceDeleteResult = await Attendance.deleteMany({ student: id });
+
+    await User.deleteOne({ _id: id });
+
+    return res.status(200).json({
+      success: true,
+      message: "Intern removed successfully",
+      cleanup: {
+        projectsUpdated: projectUpdateResult.modifiedCount || 0,
+        tasksUpdated: taskUpdateResult.modifiedCount || 0,
+        tasksDeleted: deletedTasksCount,
+        timetablesDeleted: timetableDeleteResult.deletedCount || 0,
+        attendanceDeleted: attendanceDeleteResult.deletedCount || 0,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error removing intern:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to remove intern",
+    });
+  }
+});
 
 export default router;

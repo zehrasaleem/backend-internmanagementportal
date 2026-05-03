@@ -17,6 +17,12 @@ import userRoutes from "./routes/UserRoutes.js";
 import authRoutes from "./routes/auth.routes.js";
 import taskRoutes from "./routes/task.routes.js";
 import projectRoutes from "./routes/project.routes.js";
+import timetableRoutes from "./routes/timetable.routes.js";
+import adminTimetableRoutes from "./routes/admin.timetable.routes.js";
+import teamLeadTimetableRoutes from "./routes/teamlead.timetable.routes.js";
+import attendanceRoutes from "./routes/attendance.routes.js";
+
+
 
 // ---------- Utils ----------
 import { fixProjectIndexes } from "./utils/fixIndexes.js";
@@ -41,6 +47,11 @@ app.use("/api/users", userRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/projects", projectRoutes);
 app.use("/api/google", googleAuth);
+app.use("/api/timetable", timetableRoutes);
+app.use("/api/admin/timetable", adminTimetableRoutes);
+app.use("/api/teamlead/timetable", teamLeadTimetableRoutes);
+app.use("/api/attendance", attendanceRoutes);
+
 
 // ---------- Health Check ----------
 app.get("/", (req, res) => {
