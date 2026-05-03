@@ -3,7 +3,7 @@ import Task from "../models/Task.js";
 import User from "../models/User.js";
 import { protect } from "../middleware/auth.js";
 import { canManageTask } from "../helper/permissions.js";
-import Project from "../models/Project.js";
+import Project from "../models/project.js";
 // utils/taskUtils.js OR at top of task routes file
 const isTaskMissed = (task) => {
   if (task.completedDate) return false;

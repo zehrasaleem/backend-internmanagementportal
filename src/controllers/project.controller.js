@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import Project from "../models/Project.js";
+import Project from "../models/project.js";
 import User from "../models/User.js";
 
 // Helper: validate and trim ID
