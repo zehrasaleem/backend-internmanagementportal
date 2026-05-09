@@ -8,6 +8,10 @@ import User from "../models/User.js";
 const router = express.Router();
 const isProd = process.env.NODE_ENV === "production";
 
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:5000";
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
+const GOOGLE_CALLBACK_URL = `${BACKEND_URL}/api/google/callback`;
+
 /* ==============================
    0) Debug route
 ============================== */
@@ -22,7 +26,7 @@ router.get("/", (req, res) => {
   const redirectUrl =
     `https://accounts.google.com/o/oauth2/v2/auth?` +
     `client_id=${process.env.GOOGLE_CLIENT_ID}&` +
-    `redirect_uri=http://localhost:5000/api/google/callback&` +
+    `redirect_uri=${encodeURIComponent(GOOGLE_CALLBACK_URL)}&` +
     `response_type=code&` +
     `scope=openid%20email%20profile&` +
     `access_type=offline`;
@@ -38,34 +42,32 @@ router.get("/callback", async (req, res) => {
   if (!code) return res.status(400).send("No code returned from Google");
 
   try {
-    // Exchange code for tokens
     const { data } = await axios.post(
       "https://oauth2.googleapis.com/token",
       querystring.stringify({
         code,
         client_id: process.env.GOOGLE_CLIENT_ID,
         client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: "http://localhost:5000/api/google/callback",
+        redirect_uri: GOOGLE_CALLBACK_URL,
         grant_type: "authorization_code",
       }),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
-    // Fetch user info
     const { data: userInfo } = await axios.get(
       "https://www.googleapis.com/oauth2/v2/userinfo",
       { headers: { Authorization: `Bearer ${data.access_token}` } }
     );
 
-    // Restrict domain
-    const allowedDomain = (process.env.GOOGLE_ALLOWED_DOMAIN || "@cloud.neduet.edu.pk").toLowerCase();
+    const allowedDomain = (
+      process.env.GOOGLE_ALLOWED_DOMAIN || "@cloud.neduet.edu.pk"
+    ).toLowerCase();
+
     if (!userInfo.email.toLowerCase().endsWith(allowedDomain)) {
-      const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
       const params = new URLSearchParams({ reason: "domain" });
       return res.redirect(`${FRONTEND_URL}/signup-fail?${params.toString()}`);
     }
 
-    // Create signup token (cookie)
     const signupToken = jwt.sign(
       {
         email: userInfo.email,
@@ -84,7 +86,6 @@ router.get("/callback", async (req, res) => {
       maxAge: 10 * 60 * 1000,
     });
 
-    const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
     return res.redirect(`${FRONTEND_URL}/google-signup`);
   } catch (err) {
     console.error("❌ Google OAuth error:", err.response?.data || err.message, err.stack);
@@ -101,7 +102,11 @@ router.get("/signup-info", (req, res) => {
     if (!token) return res.status(401).json({ message: "Signup session expired" });
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    return res.json({ email: payload.email, name: payload.name, picture: payload.picture });
+    return res.json({
+      email: payload.email,
+      name: payload.name,
+      picture: payload.picture,
+    });
   } catch (err) {
     console.error("Signup info error:", err.message);
     return res.status(401).json({ message: "Signup session expired" });
@@ -116,7 +121,7 @@ router.post("/complete", async (req, res) => {
     const token = req.cookies?.signup_token;
     if (!token) return res.status(401).json({ message: "Signup session expired" });
 
-    const idp = jwt.verify(token, process.env.JWT_SECRET); // { email, name, picture, googleId }
+    const idp = jwt.verify(token, process.env.JWT_SECRET);
 
     const {
       fullName,
@@ -129,7 +134,6 @@ router.post("/complete", async (req, res) => {
       dateOfJoining,
     } = req.body;
 
-    // Validate essential fields
     if (!fullName || !role) {
       return res.status(400).json({ message: "Full name and role are required" });
     }
@@ -137,7 +141,6 @@ router.post("/complete", async (req, res) => {
     let user = await User.findOne({ email: idp.email });
 
     if (!user) {
-      // Create new user
       user = new User({
         googleId: idp.googleId,
         email: idp.email,
@@ -147,7 +150,6 @@ router.post("/complete", async (req, res) => {
         role,
       });
     } else {
-      // Update existing user
       user.name = fullName || user.name || idp.name;
       user.role = role || user.role || "student";
     }
@@ -162,17 +164,11 @@ router.post("/complete", async (req, res) => {
 
       if (dateOfJoining) {
         const doj = new Date(dateOfJoining);
-        if (!isNaN(doj.getTime())) {
-          user.dateOfJoining = doj;
-        } else {
-          console.warn(`Invalid dateOfJoining received: ${dateOfJoining}`);
-          user.dateOfJoining = undefined;
-        }
+        user.dateOfJoining = !isNaN(doj.getTime()) ? doj : undefined;
       } else {
         user.dateOfJoining = undefined;
       }
     } else {
-      // Admin: clear student-only fields
       user.discipline = undefined;
       user.batch = undefined;
       user.rollNo = undefined;
@@ -182,24 +178,30 @@ router.post("/complete", async (req, res) => {
 
     await user.save();
 
-    // Issue JWT for app
     const appToken = jwt.sign(
       { id: user._id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
 
-    // Clear signup cookie
     res.clearCookie("signup_token", {
       httpOnly: true,
       sameSite: isProd ? "none" : "lax",
       secure: isProd,
     });
 
-    return res.json({ ok: true, role: user.role, user, token: appToken });
+    return res.json({
+      ok: true,
+      role: user.role,
+      user,
+      token: appToken,
+    });
   } catch (err) {
     console.error("Google signup complete error:", err.message, err.stack);
-    return res.status(500).json({ message: "Could not complete signup", error: err.message });
+    return res.status(500).json({
+      message: "Could not complete signup",
+      error: err.message,
+    });
   }
 });
 
