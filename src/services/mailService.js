@@ -1,20 +1,9 @@
 // src/services/mailService.js
-import nodemailer from "nodemailer";
 import "dotenv/config";
 
+const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT),
-  secure: false,
-  requireTLS: true,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
 export async function sendOtpEmail(to, otp) {
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
   const subject = "Your OTP Code (valid for 10 minutes)";
   const text = `Your OTP is ${otp}. It expires in 10 minutes.`;
   const html = `
@@ -27,15 +16,34 @@ export async function sendOtpEmail(to, otp) {
       <p style="font-size:12px;color:#666">If you didn't request this, you can ignore this email.</p>
     </div>
   `;
-  return transporter.sendMail({ from, to, subject, text, html });
+
+  const response = await fetch(BREVO_API_URL, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "api-key": process.env.BREVO_API_KEY,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      sender: {
+        name: process.env.SMTP_FROM_NAME || "IMPCSIT Portal",
+        email: process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER,
+      },
+      to: [{ email: to }],
+      subject,
+      textContent: text,
+      htmlContent: html,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Brevo API email failed: ${response.status} ${errorText}`);
+  }
+
+  return response.json();
 }
 
-// (optional) call once on startup to ensure SMTP works
 export async function verifySmtp() {
-  try {
-    await transporter.verify();
-    console.log("📨 SMTP transport ready");
-  } catch (e) {
-    console.error("SMTP verify failed:", e.message);
-  }
+  console.log("📨 Brevo API mail service ready");
 }

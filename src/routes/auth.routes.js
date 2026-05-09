@@ -2,27 +2,10 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
+import { sendOtpEmail } from "../services/mailService.js";
 import User from "../models/User.js";
 
 const router = express.Router();
-
-/* ======================================
-   Email transport (uses your .env)
-====================================== */
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.gmail.com",
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: String(process.env.SMTP_SECURE || "false") === "true",
-  requireTLS: true,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000,
-});
 
 /* ======================================
    Allowed domain helper (optional)
@@ -40,11 +23,10 @@ router.get("/me", async (req, res) => {
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
     if (!token) return res.status(401).json({ message: "Missing token" });
 
-    const payload = jwt.verify(token, process.env.JWT_SECRET); // { id, role }
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(payload.id).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // never send password/otp
     delete user.password;
     delete user.otp;
     delete user.otpExpires;
@@ -58,23 +40,18 @@ router.get("/me", async (req, res) => {
 
 /* ===========================
    PUT /auth/me
-   Update logged-in student profile
 =========================== */
 router.put("/me", async (req, res) => {
   try {
     const auth = req.headers.authorization || "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
 
-    if (!token) {
-      return res.status(401).json({ message: "Missing token" });
-    }
+    if (!token) return res.status(401).json({ message: "Missing token" });
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-
     const user = await User.findById(payload.id);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     const { name, phoneNumber, discipline, semester, rollNo } = req.body;
 
@@ -129,31 +106,24 @@ router.post("/request-otp", async (req, res) => {
     }
 
     if (!user) {
-  user = new User({
-    name: email.split("@")[0],
-    email,
-    password,
-    isVerified: false,
-    otp,
-    otpExpires,
-    role: "student",
-  });
-}
- else {
-      user.password = password; // raw; model will hash
+      user = new User({
+        name: email.split("@")[0],
+        email,
+        password,
+        isVerified: false,
+        otp,
+        otpExpires,
+        role: "student",
+      });
+    } else {
+      user.password = password;
       user.otp = otp;
       user.otpExpires = otpExpires;
     }
 
     await user.save();
 
-    await transporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
-      to: email,
-      subject: "Your verification code",
-      text: `Your verification code is ${otp}. It expires in 10 minutes.`,
-      html: `<p>Your verification code is <b>${otp}</b>. It expires in 10 minutes.</p>`,
-    });
+    await sendOtpEmail(email, otp);
 
     return res.json({ ok: true, message: "OTP sent" });
   } catch (err) {
@@ -177,6 +147,7 @@ router.post("/verify-otp", async (req, res) => {
 
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ message: "User not found" });
+
     if (!user.otp || !user.otpExpires) {
       return res.status(400).json({ message: "No OTP requested" });
     }
@@ -204,7 +175,6 @@ router.post("/verify-otp", async (req, res) => {
 
 /* ===========================
    POST /auth/register
-   (Basic create; model pre-save hashes)
 =========================== */
 router.post("/register", async (req, res) => {
   try {
@@ -216,15 +186,17 @@ router.post("/register", async (req, res) => {
     const newUser = new User({
       name,
       email,
-      password,         // raw; model hashes automatically
+      password,
       role: role || "student",
     });
 
     await newUser.save();
 
-    const token = jwt.sign({ id: newUser._id, role: newUser.role }, process.env.JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    const token = jwt.sign(
+      { id: newUser._id, role: newUser.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
     return res.status(201).json({
       message: "User registered successfully",
@@ -250,9 +222,11 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
     return res.json({
       message: "Login successful",
@@ -267,11 +241,9 @@ router.post("/login", async (req, res) => {
 
 /* ===========================
    POST /auth/register/complete
-   (NORMAL SIGNUP: Persist ALL profile fields into User)
 =========================== */
 router.post("/register/complete", async (req, res) => {
   try {
-    // normalize email
     const email = String(req.body.email || "").trim().toLowerCase();
 
     const {
@@ -282,7 +254,7 @@ router.post("/register/complete", async (req, res) => {
       rollNo,
       phoneNumber,
       semester,
-      dateOfJoining, // "YYYY-MM-DD" from <input type="date">
+      dateOfJoining,
     } = req.body;
 
     if (!email || !fullName) {
@@ -294,20 +266,17 @@ router.post("/register/complete", async (req, res) => {
       return res.status(400).json({ message: "User not found or not verified" });
     }
 
-    // Always set these
     user.name = String(fullName).trim();
     user.role = role || "student";
     user.phoneNumber = phoneNumber || undefined;
 
     if (user.role === "student") {
-      // Save ALL student fields
       user.discipline = discipline || undefined;
       user.batch = batch || undefined;
       user.rollNo = rollNo || undefined;
       user.semester = semester || undefined;
       user.dateOfJoining = dateOfJoining ? new Date(dateOfJoining) : undefined;
     } else {
-      // Admin: clear student-only data
       user.discipline = undefined;
       user.batch = undefined;
       user.rollNo = undefined;
@@ -317,10 +286,11 @@ router.post("/register/complete", async (req, res) => {
 
     await user.save();
 
-    // ⬇ return a fresh JWT + sanitized user object
-    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
     return res.json({
       ok: true,
