@@ -78,20 +78,25 @@ connectMongo()
   });
 
 // ---------- Graceful Shutdown ----------
-const shutdown = () => {
+const shutdown = async () => {
   console.log("🛑 Shutting down server...");
 
-  if (server) {
-    server.close(() => {
-      console.log("✅ HTTP server closed.");
-
-      mongoose.connection.close(false, () => {
+  try {
+    if (server) {
+      server.close(async () => {
+        console.log("✅ HTTP server closed.");
+        await mongoose.connection.close(false);
         console.log("✅ MongoDB connection closed.");
         process.exit(0);
       });
-    });
-  } else {
-    process.exit(0);
+    } else {
+      await mongoose.connection.close(false);
+      console.log("✅ MongoDB connection closed.");
+      process.exit(0);
+    }
+  } catch (error) {
+    console.error("❌ Error during shutdown:", error);
+    process.exit(1);
   }
 };
 
