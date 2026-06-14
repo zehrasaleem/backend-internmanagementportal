@@ -4,9 +4,62 @@ import axios from "axios";
 import querystring from "querystring";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { sendAdminSignupApprovalEmail } from "../services/mailService.js";
 
 const router = express.Router();
 const isProd = process.env.NODE_ENV === "production";
+
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:5000";
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
+const GOOGLE_CALLBACK_URL = `${BACKEND_URL}/api/google/callback`;
+
+const MASTER_ADMIN_EMAIL =
+  process.env.MASTER_ADMIN_EMAIL || "saleem4602545@cloud.neduet.edu.pk";
+
+const ALLOWED_DOMAIN =
+  process.env.ALLOWED_EMAIL_DOMAIN || "@cloud.neduet.edu.pk";
+
+const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
+
+const onlyAllowedDomain = (email) =>
+  !ALLOWED_DOMAIN ||
+  normalizeEmail(email).endsWith(ALLOWED_DOMAIN.toLowerCase());
+
+const findApprovedAdminByEmail = async (email) => {
+  return User.findOne({
+    email: normalizeEmail(email),
+    role: "admin",
+    isVerified: true,
+    $or: [
+      { approvalStatus: "approved" },
+      { approvalStatus: { $exists: false } },
+    ],
+  });
+};
+
+const clearSignupCookie = (res) => {
+  res.clearCookie("signup_token", {
+    httpOnly: true,
+    sameSite: isProd ? "none" : "lax",
+    secure: isProd,
+  });
+};
+
+const buildAdminApprovalUrls = (userId) => {
+  const approvalToken = jwt.sign(
+    {
+      type: "admin_signup_approval",
+      userId: userId.toString(),
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "2d" }
+  );
+
+  return {
+    approveUrl: `${BACKEND_URL}/api/auth/admin-signup/approve?token=${approvalToken}`,
+    rejectUrl: `${BACKEND_URL}/api/auth/admin-signup/reject?token=${approvalToken}`,
+  };
+};
 
 /* ==============================
    0) Debug route
@@ -22,7 +75,7 @@ router.get("/", (req, res) => {
   const redirectUrl =
     `https://accounts.google.com/o/oauth2/v2/auth?` +
     `client_id=${process.env.GOOGLE_CLIENT_ID}&` +
-    `redirect_uri=http://localhost:5000/api/google/callback&` +
+    `redirect_uri=${encodeURIComponent(GOOGLE_CALLBACK_URL)}&` +
     `response_type=code&` +
     `scope=openid%20email%20profile&` +
     `access_type=offline`;
@@ -31,44 +84,55 @@ router.get("/", (req, res) => {
 });
 
 /* ==============================
-   2) Google callback → verify domain → set signup cookie
+   2) Google callback
 ============================== */
 router.get("/callback", async (req, res) => {
   const code = req.query.code;
-  if (!code) return res.status(400).send("No code returned from Google");
+
+  if (!code) {
+    return res.status(400).send("No code returned from Google");
+  }
 
   try {
-    // Exchange code for tokens
     const { data } = await axios.post(
       "https://oauth2.googleapis.com/token",
       querystring.stringify({
         code,
         client_id: process.env.GOOGLE_CLIENT_ID,
         client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: "http://localhost:5000/api/google/callback",
+        redirect_uri: GOOGLE_CALLBACK_URL,
         grant_type: "authorization_code",
       }),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
     );
 
-    // Fetch user info
     const { data: userInfo } = await axios.get(
       "https://www.googleapis.com/oauth2/v2/userinfo",
-      { headers: { Authorization: `Bearer ${data.access_token}` } }
+      {
+        headers: {
+          Authorization: `Bearer ${data.access_token}`,
+        },
+      }
     );
 
-    // Restrict domain
-    const allowedDomain = (process.env.GOOGLE_ALLOWED_DOMAIN || "@cloud.neduet.edu.pk").toLowerCase();
-    if (!userInfo.email.toLowerCase().endsWith(allowedDomain)) {
-      const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
+    const allowedDomain = (
+      process.env.GOOGLE_ALLOWED_DOMAIN || "@cloud.neduet.edu.pk"
+    ).toLowerCase();
+
+    const googleEmail = normalizeEmail(userInfo.email);
+
+    if (!googleEmail.endsWith(allowedDomain)) {
       const params = new URLSearchParams({ reason: "domain" });
       return res.redirect(`${FRONTEND_URL}/signup-fail?${params.toString()}`);
     }
 
-    // Create signup token (cookie)
     const signupToken = jwt.sign(
       {
-        email: userInfo.email,
+        email: googleEmail,
         name: userInfo.name,
         picture: userInfo.picture,
         googleId: userInfo.id,
@@ -84,77 +148,185 @@ router.get("/callback", async (req, res) => {
       maxAge: 10 * 60 * 1000,
     });
 
-    const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
     return res.redirect(`${FRONTEND_URL}/google-signup`);
   } catch (err) {
-    console.error("❌ Google OAuth error:", err.response?.data || err.message, err.stack);
-    return res.status(500).send("Google login failed");
+    console.error(
+      "❌ Google OAuth error:",
+      err.response?.data || err.message,
+      err.stack
+    );
+
+    return res.status(500).send("Google signup failed");
   }
 });
 
 /* ==============================
-   3) Prefill name/email from signup cookie
+   3) Signup info
 ============================== */
 router.get("/signup-info", (req, res) => {
   try {
     const token = req.cookies?.signup_token;
-    if (!token) return res.status(401).json({ message: "Signup session expired" });
+
+    if (!token) {
+      return res.status(401).json({
+        message: "Signup session expired",
+      });
+    }
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    return res.json({ email: payload.email, name: payload.name, picture: payload.picture });
+
+    return res.json({
+      email: payload.email,
+      name: payload.name,
+      picture: payload.picture,
+    });
   } catch (err) {
     console.error("Signup info error:", err.message);
-    return res.status(401).json({ message: "Signup session expired" });
+
+    return res.status(401).json({
+      message: "Signup session expired",
+    });
   }
 });
 
 /* ==============================
-   4) Complete signup (create/update user)
+   4) Complete Google signup
+   IMPORTANT:
+   This only creates pending request.
+   It does NOT login user.
+   It does NOT return token.
 ============================== */
 router.post("/complete", async (req, res) => {
   try {
     const token = req.cookies?.signup_token;
-    if (!token) return res.status(401).json({ message: "Signup session expired" });
 
-    const idp = jwt.verify(token, process.env.JWT_SECRET); // { email, name, picture, googleId }
+    if (!token) {
+      return res.status(401).json({
+        message: "Signup session expired",
+      });
+    }
+
+    const idp = jwt.verify(token, process.env.JWT_SECRET);
 
     const {
       fullName,
       role,
+      password,
       discipline,
       batch,
       rollNo,
       phoneNumber,
       semester,
       dateOfJoining,
+      supervisorEmail,
     } = req.body;
 
-    // Validate essential fields
+    const googleEmail = normalizeEmail(idp.email);
+    const normalizedSupervisorEmail = normalizeEmail(supervisorEmail);
+
     if (!fullName || !role) {
-      return res.status(400).json({ message: "Full name and role are required" });
+      return res.status(400).json({
+        message: "Full name and role are required",
+      });
     }
 
-    let user = await User.findOne({ email: idp.email });
+    if (!password || String(password).length < 6) {
+      return res.status(400).json({
+        message: "Password must be at least 6 characters",
+      });
+    }
 
+    const requestedRole = role === "admin" ? "admin" : "student";
+
+    if (
+      requestedRole === "student" &&
+      (!discipline || !batch || !rollNo || !normalizedSupervisorEmail)
+    ) {
+      return res.status(400).json({
+        message:
+          "Discipline, batch, roll number, and supervisor/admin email are required for students.",
+      });
+    }
+
+    if (
+      requestedRole === "student" &&
+      !onlyAllowedDomain(normalizedSupervisorEmail)
+    ) {
+      return res.status(400).json({
+        message: `Supervisor/admin email must be a ${ALLOWED_DOMAIN} address.`,
+      });
+    }
+
+    if (requestedRole === "student") {
+      const supervisorAdmin = await findApprovedAdminByEmail(
+        normalizedSupervisorEmail
+      );
+
+      if (!supervisorAdmin) {
+        return res.status(400).json({
+          message:
+            "Supervisor/admin email was not found as an approved admin account.",
+        });
+      }
+    }
+
+    let user = await User.findOne({ email: googleEmail });
+
+    if (user && (user.approvalStatus || "approved") === "approved") {
+      clearSignupCookie(res);
+
+      return res.status(409).json({
+        message:
+          "This account is already approved. Please login using the normal email/password login form.",
+      });
+    }
+
+    if (user?.approvalStatus === "pending") {
+      clearSignupCookie(res);
+
+      return res.status(409).json({
+        message:
+          "Your signup request is already pending approval. Please login after approval.",
+      });
+    }
+
+    if (user?.approvalStatus === "rejected") {
+      await User.deleteOne({ _id: user._id });
+      user = null;
+    }
+
+    /*
+      IMPORTANT:
+      Do NOT bcrypt.hash here.
+      User.js already hashes password in userSchema.pre("save").
+    */
     if (!user) {
-      // Create new user
       user = new User({
         googleId: idp.googleId,
-        email: idp.email,
-        name: fullName || idp.name,
+        email: googleEmail,
+        name: fullName.trim() || idp.name,
+        password: password,
         picture: idp.picture,
         isVerified: true,
-        role,
+        role: requestedRole,
       });
     } else {
-      // Update existing user
-      user.name = fullName || user.name || idp.name;
-      user.role = role || user.role || "student";
+      user.googleId = user.googleId || idp.googleId;
+      user.picture = user.picture || idp.picture;
+      user.name = fullName.trim() || user.name || idp.name;
+      user.password = password;
+      user.role = requestedRole;
+      user.isVerified = true;
     }
 
     user.phoneNumber = phoneNumber || undefined;
+    user.approvalStatus = "pending";
+    user.approvalRequestedAt = new Date();
+    user.approvedAt = undefined;
+    user.approvedBy = undefined;
 
-    if (user.role === "student") {
+    if (requestedRole === "student") {
+      user.supervisorEmail = normalizedSupervisorEmail;
       user.discipline = discipline || undefined;
       user.batch = batch || undefined;
       user.rollNo = rollNo || undefined;
@@ -162,17 +334,12 @@ router.post("/complete", async (req, res) => {
 
       if (dateOfJoining) {
         const doj = new Date(dateOfJoining);
-        if (!isNaN(doj.getTime())) {
-          user.dateOfJoining = doj;
-        } else {
-          console.warn(`Invalid dateOfJoining received: ${dateOfJoining}`);
-          user.dateOfJoining = undefined;
-        }
+        user.dateOfJoining = !isNaN(doj.getTime()) ? doj : undefined;
       } else {
         user.dateOfJoining = undefined;
       }
     } else {
-      // Admin: clear student-only fields
+      user.supervisorEmail = undefined;
       user.discipline = undefined;
       user.batch = undefined;
       user.rollNo = undefined;
@@ -182,24 +349,43 @@ router.post("/complete", async (req, res) => {
 
     await user.save();
 
-    // Issue JWT for app
-    const appToken = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
-    );
+    if (requestedRole === "admin") {
+      const { approveUrl, rejectUrl } = buildAdminApprovalUrls(user._id);
 
-    // Clear signup cookie
-    res.clearCookie("signup_token", {
-      httpOnly: true,
-      sameSite: isProd ? "none" : "lax",
-      secure: isProd,
+      await sendAdminSignupApprovalEmail({
+        to: MASTER_ADMIN_EMAIL,
+        user,
+        approveUrl,
+        rejectUrl,
+      });
+
+      clearSignupCookie(res);
+
+      return res.json({
+        ok: true,
+        pendingApproval: true,
+        role: user.role,
+        message:
+          "Admin signup request sent to the main admin for approval. You can login with normal email/password after approval.",
+      });
+    }
+
+    clearSignupCookie(res);
+
+    return res.json({
+      ok: true,
+      pendingApproval: true,
+      role: user.role,
+      message:
+        "Student signup request sent to the selected supervisor/admin for approval. You can login with normal email/password after approval.",
     });
-
-    return res.json({ ok: true, role: user.role, user, token: appToken });
   } catch (err) {
     console.error("Google signup complete error:", err.message, err.stack);
-    return res.status(500).json({ message: "Could not complete signup", error: err.message });
+
+    return res.status(500).json({
+      message: "Could not complete signup",
+      error: err.message,
+    });
   }
 });
 

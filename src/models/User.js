@@ -18,6 +18,21 @@ const userSchema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   otp: String,
   otpExpires: Date,
+
+  // Approval flow
+  approvalStatus: {
+    type: String,
+    enum: ["incomplete", "pending", "approved", "rejected"],
+    default: "approved",
+  },
+  supervisorEmail: String,
+  approvalRequestedAt: Date,
+  approvedAt: Date,
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+  },
+
   // Student-specific fields
   discipline: String,
   batch: String,
@@ -46,9 +61,16 @@ const User = mongoose.model("User", userSchema);
 /* ------------------- GET ALL STUDENTS (FOR ADMIN) ------------------- */
 export const getAllStudents = async (req, res) => {
   try {
-    const students = await User.find({ role: "student" }).select(
-      "name email _id discipline batch rollNo semester dateOfJoining"
+    const students = await User.find({
+      role: "student",
+      $or: [
+        { approvalStatus: "approved" },
+        { approvalStatus: { $exists: false } },
+      ],
+    }).select(
+      "name email _id picture discipline batch rollNo phoneNumber semester dateOfJoining supervisorEmail"
     );
+
     res.status(200).json({
       success: true,
       students,

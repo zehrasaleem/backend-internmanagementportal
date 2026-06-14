@@ -16,6 +16,18 @@ const ALLOWED_DOMAIN = (process.env.ALLOWED_EMAIL_DOMAIN || "@cloud.neduet.edu.p
 const normalizeEmail = (e) => String(e || "").trim().toLowerCase();
 const isValidEmailDomain = (email) => normalizeEmail(email).endsWith(ALLOWED_DOMAIN);
 
+const onlyAdmin = (req, res) => {
+  if (req.user.role !== "admin") {
+    res.status(403).json({
+      success: false,
+      message: "Only admin can perform this action",
+    });
+    return false;
+  }
+
+  return true;
+};
+
 /* ------------------- SIGNUP (send OTP by email) ------------------- */
 router.post("/signup", async (req, res) => {
   try {
@@ -40,6 +52,7 @@ router.post("/signup", async (req, res) => {
       isVerified: false,
       otp,
       otpExpires: Date.now() + 10 * 60 * 1000, // 10 mins
+      approvalStatus: "incomplete",
     });
     await user.save();
 
@@ -105,6 +118,20 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ message: "Please verify your email first" });
     }
 
+    const approvalStatus = user.approvalStatus || "approved";
+
+    if (approvalStatus === "incomplete") {
+      return res.status(403).json({ message: "Please complete your signup profile first." });
+    }
+
+    if (approvalStatus === "pending") {
+      return res.status(403).json({ message: "Your signup request is waiting for approval." });
+    }
+
+    if (approvalStatus === "rejected") {
+      return res.status(403).json({ message: "Your signup request was rejected." });
+    }
+
     const userObj = user.toObject();
     delete userObj.password;
 
@@ -128,6 +155,135 @@ router.get("/", async (_req, res) => {
 
 router.get("/students", getAllStudents);
 
+/* ---------------------- STUDENT SIGNUP REQUESTS ---------------------- */
+router.get("/signup-requests", protect, async (req, res) => {
+  try {
+    if (!onlyAdmin(req, res)) return;
+
+    const adminEmail = normalizeEmail(req.user.email);
+
+    const requests = await User.find({
+      role: "student",
+      approvalStatus: "pending",
+      supervisorEmail: adminEmail,
+    })
+      .select(
+        "_id name email discipline batch rollNo phoneNumber semester dateOfJoining supervisorEmail approvalRequestedAt"
+      )
+      .sort({ approvalRequestedAt: -1 });
+
+    return res.status(200).json({
+      success: true,
+      requests,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching signup requests:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch signup requests",
+    });
+  }
+});
+
+/* ---------------------- APPROVE STUDENT SIGNUP REQUEST ---------------------- */
+router.patch("/signup-requests/:id/approve", protect, async (req, res) => {
+  try {
+    if (!onlyAdmin(req, res)) return;
+
+    const { id } = req.params;
+    const adminEmail = normalizeEmail(req.user.email);
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request id",
+      });
+    }
+
+    const student = await User.findOne({
+      _id: id,
+      role: "student",
+      approvalStatus: "pending",
+      supervisorEmail: adminEmail,
+    });
+
+    if (!student) {
+      return res.status(404).json({
+        success: false,
+        message: "Pending student signup request not found for your admin email",
+      });
+    }
+
+    student.approvalStatus = "approved";
+    student.approvedAt = new Date();
+    student.approvedBy = req.user._id;
+    student.isVerified = true;
+
+    await student.save();
+
+    const studentObj = student.toObject();
+    delete studentObj.password;
+    delete studentObj.otp;
+    delete studentObj.otpExpires;
+
+    return res.status(200).json({
+      success: true,
+      message: "Student signup approved successfully",
+      student: studentObj,
+    });
+  } catch (error) {
+    console.error("❌ Error approving student signup:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to approve student signup",
+    });
+  }
+});
+
+/* ---------------------- REJECT STUDENT SIGNUP REQUEST ---------------------- */
+router.delete("/signup-requests/:id/reject", protect, async (req, res) => {
+  try {
+    if (!onlyAdmin(req, res)) return;
+
+    const { id } = req.params;
+    const adminEmail = normalizeEmail(req.user.email);
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request id",
+      });
+    }
+
+    const student = await User.findOne({
+      _id: id,
+      role: "student",
+      approvalStatus: "pending",
+      supervisorEmail: adminEmail,
+    });
+
+    if (!student) {
+      return res.status(404).json({
+        success: false,
+        message: "Pending student signup request not found for your admin email",
+      });
+    }
+
+    await User.deleteOne({ _id: student._id });
+
+    return res.status(200).json({
+      success: true,
+      message: "Student signup rejected successfully",
+    });
+  } catch (error) {
+    console.error("❌ Error rejecting student signup:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to reject student signup",
+    });
+  }
+});
+
 /* ---------------------- GET SINGLE STUDENT PROFILE ---------------------- */
 router.get("/students/:id", protect, async (req, res) => {
   try {
@@ -147,8 +303,15 @@ router.get("/students/:id", protect, async (req, res) => {
       });
     }
 
-    const student = await User.findOne({ _id: id, role: "student" }).select(
-      "_id name email picture discipline batch rollNo phoneNumber semester dateOfJoining"
+    const student = await User.findOne({
+      _id: id,
+      role: "student",
+      $or: [
+        { approvalStatus: "approved" },
+        { approvalStatus: { $exists: false } },
+      ],
+    }).select(
+      "_id name email picture discipline batch rollNo phoneNumber semester dateOfJoining supervisorEmail"
     );
 
     if (!student) {
@@ -190,7 +353,14 @@ router.delete("/students/:id", protect, async (req, res) => {
       });
     }
 
-    const intern = await User.findOne({ _id: id, role: "student" });
+    const intern = await User.findOne({
+      _id: id,
+      role: "student",
+      $or: [
+        { approvalStatus: "approved" },
+        { approvalStatus: { $exists: false } },
+      ],
+    });
 
     if (!intern) {
       return res.status(404).json({
