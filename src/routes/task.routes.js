@@ -4,7 +4,6 @@ import User from "../models/User.js";
 import { protect } from "../middleware/auth.js";
 import { canManageTask } from "../helper/permissions.js";
 import Project from "../models/Project.js";
-// utils/taskUtils.js OR at top of task routes file
 const isTaskMissed = (task) => {
   if (task.completedDate) return false;
 
@@ -15,30 +14,20 @@ const isTaskMissed = (task) => {
 
 const handleCompletionDates = (task, newStatus) => {
   const now = new Date();
-
-  // Set startDate when task begins
   if (newStatus === "In Progress" && !task.startDate) {
     task.startDate = now;
   }
-
-  // Set completedDate when task is completed
   if (newStatus === "Completed" && !task.completedDate) {
     task.completedDate = now;
   }
 
-  // Clear completedDate only if reopening the task
   if (["Assigned", "In Progress"].includes(newStatus) && task.completedDate) {
     task.completedDate = null;
   }
 };
 
 
-
 const router = express.Router();
-
-/* ---------------------------------------------
-   📘 CREATE NEW TASK (Admin or Team Lead)
---------------------------------------------- */
 router.post("/", protect, async (req, res) => {
   try {
     const { project, title, description, assignedTo, dueDate, status, subHeading } = req.body;
@@ -63,8 +52,6 @@ router.post("/", protect, async (req, res) => {
     const isStudentTeamLead = req.user.role === "student" &&
       projectDoc.teamLead.toString() === req.user._id.toString();
 
-    // ---------- ASSIGNMENT CHECKS ----------
-    // ---------- ASSIGNMENT CHECKS ----------
     if (req.user.role === "admin") {
       if (!projectDoc.teamLead) return res.status(400).json({ success: false, message: "Project has no team lead assigned." });
       if (assignedTo.length !== 1 || assignedTo[0] !== projectDoc.teamLead.email) {
@@ -82,7 +69,6 @@ router.post("/", protect, async (req, res) => {
         invalidEmails
       });
 
-      // 🚨 New Rule: TL cannot be assigned along with other students
       if (assignedTo.includes(projectDoc.teamLead.email) && assignedTo.length > 1) {
         return res.status(403).json({
           success: false,
@@ -91,8 +77,6 @@ router.post("/", protect, async (req, res) => {
       }
     }
 
-
-    // ---------- FETCH USERS ----------
     const users = await User.find({ email: { $in: assignedTo } });
     if (users.length !== assignedTo.length) {
       return res.status(400).json({
@@ -103,7 +87,6 @@ router.post("/", protect, async (req, res) => {
       });
     }
 
-    // ---------- CREATE TASK ----------
     const newTask = await Task.create({
       title,
       subHeading: subHeading || "",
@@ -115,8 +98,7 @@ router.post("/", protect, async (req, res) => {
       dueDate,
       status: status || "Assigned",
     });
-    // Debug: check task object before saving
-console.log("🧪 Saving task to DB:", newTask);
+    console.log("🧪 Saving task to DB:", newTask);
 
     const populatedTask = await Task.findById(newTask._id)
       .populate([
@@ -134,40 +116,45 @@ console.log("🧪 Saving task to DB:", newTask);
   }
 });
 
-/* ---------------------------------------------
-   📗 GET ALL TASKS (Admin / Team Lead)
---------------------------------------------- */
 router.get("/", protect, async (req, res) => {
   try {
     let tasks = [];
-
-    /* ---------------- ADMIN ---------------- */
     if (req.user.role === "admin") {
-      tasks = await Task.find()
+      const ownedProjects = await Project.find({ createdBy: req.user._id }).select("_id teamLead");
+      const ownedProjectIds = ownedProjects.map((p) => p._id);
+
+      const teamLeadByProject = {};
+      ownedProjects.forEach((p) => {
+        teamLeadByProject[p._id.toString()] = p.teamLead?.toString() || null;
+      });
+
+      const allProjectTasks = await Task.find({ project: { $in: ownedProjectIds } })
         .populate("assignedTo", "name email")
         .populate("assignedBy", "name email")
         .populate({ path: "project", select: "title teamLead" });
 
-      tasks = tasks.map(task => {
-        task.canApprove = true; // Admin can approve everything
+      tasks = allProjectTasks.filter((task) => {
+        const teamLeadId = teamLeadByProject[task.project?._id?.toString()];
+        if (!teamLeadId) return false;
+        return task.assignedTo.some((u) => u._id.toString() === teamLeadId);
+      });
+
+      tasks = tasks.map((task) => {
+        task.canApprove = true;
         return task;
       });
 
       return res.json({ tasks });
     }
-
-    /* ---------------- TEAM LEAD / STUDENT ---------------- */
-    // Fetch projects where user is TL
+   
     const leadProjects = await Project.find({ teamLead: req.user._id }).select("_id");
     const leadProjectIds = leadProjects.map(p => p._id.toString());
 
-    // Fetch tasks assigned to this user (student role)
     const studentTasks = await Task.find({ assignedTo: req.user._id })
       .populate("assignedTo", "name email")
       .populate("assignedBy", "name email")
       .populate({ path: "project", select: "title teamLead" });
 
-    // Fetch tasks for projects where user is TL
     let leadTasks = [];
     if (leadProjectIds.length > 0) {
       leadTasks = await Task.find({ project: { $in: leadProjectIds } })
@@ -176,26 +163,28 @@ router.get("/", protect, async (req, res) => {
         .populate({ path: "project", select: "title teamLead" });
     }
 
-    // Combine tasks and remove duplicates
     const allTasksMap = {};
     [...studentTasks, ...leadTasks].forEach(task => {
       allTasksMap[task._id] = task;
     });
     tasks = Object.values(allTasksMap);
 
-    // Mark missed tasks and set canApprove
     tasks = tasks.map(task => {
       const isMissed = isTaskMissed(task);
-      if (isMissed && !["Pending Start Approval", "Pending Approval"].includes(task.status)) {
+      const missedExemptStatuses = [
+        "Pending Start Approval",
+        "Pending Approval",
+        "Pending TL Approval",
+        "Pending Admin Approval",
+        "Rejected",
+      ];
+      if (isMissed && !missedExemptStatuses.includes(task.status)) {
         task.status = "Missed";
       }
 
-      // Determine if user can approve this task
-      // Make sure teamLeadId is always a string
       const teamLeadId = task.project.teamLead?._id?.toString() || task.project.teamLead?.toString();
       const isLead = teamLeadId === req.user._id.toString();
       task.canApprove = isLead && ["Missed", "Pending TL Approval", "Pending Admin Approval"].includes(task.status);
-
 
       return task;
     });
@@ -208,7 +197,6 @@ router.get("/", protect, async (req, res) => {
   }
 });
 
-// PUT /:id/tl-reset-missed
 router.put("/:id/tl-reset-missed", protect, async (req, res) => {
   try {
     if (req.user.role !== "teamLead") {
@@ -223,7 +211,6 @@ router.put("/:id/tl-reset-missed", protect, async (req, res) => {
     const task = await Task.findById(req.params.id).populate("project");
     if (!task) return res.status(404).json({ message: "Task not found." });
 
-    // Only TL of the project can reset
     if (task.project.teamLead.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: "You are not the TL of this project." });
     }
@@ -238,10 +225,9 @@ router.put("/:id/tl-reset-missed", protect, async (req, res) => {
     }
 
     task.dueDate = dueDateObj;
-    task.status = resetTo; // Assigned or In Progress
+    task.status = resetTo; 
     task.startDate = resetTo === "In Progress" ? new Date() : null;
     task.completedDate = null;
-    // ✅ Reset progress if task is being reassigned
     if (resetTo === "Assigned" || resetTo === "In Progress") {
       task.progress = 0;
     }
@@ -259,15 +245,6 @@ router.put("/:id/tl-reset-missed", protect, async (req, res) => {
   }
 });
 
-
-/* 
----------------------------------------------
-📘 GET TASKS BY STUDENT EMAIL
----------------------------------------------
-*/
-/* ---------------------------------------------
-   📘 GET TASKS BY STUDENT EMAIL
---------------------------------------------- */
 router.get("/student/:email", protect, async (req, res) => {
   try {
     if (req.user.role === "student" && req.user.email !== req.params.email) {
@@ -287,8 +264,16 @@ router.get("/student/:email", protect, async (req, res) => {
 
     tasks = tasks.map(task => {
       const isMissed = isTaskMissed(task);
-      if (isMissed && !["Pending Start Approval", "Pending Approval"].includes(task.status)) {
+      const missedExemptStatuses = [
+        "Pending Start Approval",
+        "Pending Approval",
+        "Pending TL Approval",
+        "Pending Admin Approval",
+        "Rejected",
+      ];
+      if (isMissed && !missedExemptStatuses.includes(task.status)) {
         task.status = "Missed";
+        task.adminApproved = false; 
       }
 
       const isLead = task.project.teamLead?.toString() === req.user._id.toString();
@@ -298,21 +283,15 @@ router.get("/student/:email", protect, async (req, res) => {
     });
 
     res.status(200).json({ success: true, tasks });
-
   } catch (error) {
     console.error("❌ Error fetching student tasks:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-/* 
----------------------------------------------
-🟡 UPDATE TASK STATUS
----------------------------------------------
-*/
 router.put("/:id/status", protect, async (req, res) => {
   try {
-    const { status } = req.body;
+    const { status, rejectionReason } = req.body;
 
     const validStatuses = [
       "Assigned",
@@ -353,9 +332,6 @@ router.put("/:id/status", protect, async (req, res) => {
       (req.user.role === "student" &&
         project.teamLead.toString() === req.user._id.toString());
 
-    /* ============================
-       MISSED TASK RULE
-       ============================ */
     if (isTaskMissed(task) && req.user.role !== "admin") {
       return res.status(403).json({
         success: false,
@@ -363,22 +339,33 @@ router.put("/:id/status", protect, async (req, res) => {
       });
     }
 
-    /* ============================
-       STUDENT RESTRICTION
-       ============================ */
     if (req.user.role === "student" && !isProjectLead) {
       return res.status(403).json({
         success: false,
         message: "Students cannot change task status manually.",
       });
     }
-    /* ============================
-       ADMIN LOGIC
-       ============================ */
+
     if (req.user.role === "admin") {
       task.status = status;
       handleCompletionDates(task, status);
-      task.adminApproved = status === "Completed";
+
+      if (status === "Completed") {
+        task.adminApproved = true;
+        task.approvedBy = req.user._id;
+        task.approvedByRole = "admin";
+        task.rejectionReason = "";
+        task.rejectedAt = null;
+      } else {
+        task.adminApproved = false;
+      }
+
+      if (status === "Rejected") {
+        task.rejectionReason = rejectionReason || "";
+        task.rejectedAt = new Date();
+        task.approvedBy = null;
+        task.approvedByRole = null;
+      }
 
       await task.save();
       await task.populate([
@@ -388,10 +375,6 @@ router.put("/:id/status", protect, async (req, res) => {
 
       return res.json({ success: true, task });
     }
-
-    /* ============================
-       TEAM LEAD / PROJECT LEAD
-       ============================ */
     if (isProjectLead) {
       const missed = isTaskMissed(task);
 
@@ -410,9 +393,20 @@ router.put("/:id/status", protect, async (req, res) => {
 
       task.status = status;
       handleCompletionDates(task, status);
-      // Make sure completedDate is set after status update
-      if (task.status === "Completed" && !task.completedDate) {
-        task.completedDate = new Date();
+
+      if (status === "Completed") {
+        task.approvedBy = req.user._id;
+        task.approvedByRole = "teamLead";
+        task.rejectionReason = "";
+        task.rejectedAt = null;
+        if (!task.completedDate) task.completedDate = new Date();
+      }
+
+      if (status === "Rejected") {
+        task.rejectionReason = rejectionReason || "";
+        task.rejectedAt = new Date();
+        task.approvedBy = null;
+        task.approvedByRole = null;
       }
 
       await task.save();
@@ -424,9 +418,6 @@ router.put("/:id/status", protect, async (req, res) => {
       return res.json({ success: true, task });
     }
 
-    /* ============================
-       FALLBACK
-       ============================ */
     return res
       .status(403)
       .json({ success: false, message: "Access denied." });
@@ -436,11 +427,6 @@ router.put("/:id/status", protect, async (req, res) => {
   }
 });
 
-/* 
----------------------------------------------
-🟢 UPDATE TASK PROGRESS (0–100)
----------------------------------------------
-*/
 router.put("/:id/progress", protect, async (req, res) => {
   try {
     const { progress } = req.body;
@@ -466,18 +452,19 @@ router.put("/:id/progress", protect, async (req, res) => {
     if (req.user.role === "student" && !isAssigned) {
       return res.status(403).json({ success: false, message: "You are not assigned to this task." });
     }
-
-    // Block updating progress if task is already in approval stages or completed
-    if (["Completed", "Pending TL Approval", "Pending Admin Approval", "Rejected"].includes(task.status)) {
+    if (["Completed", "Pending TL Approval", "Pending Admin Approval"].includes(task.status)) {
       return res.status(400).json({ success: false, message: "Cannot update progress for this task currently." });
     }
-
-    // Update progress
+   
+    const wasRejected = task.status === "Rejected";
     task.progress = progress;
     if (!task.startDate) task.startDate = new Date();
-    if (req.user.role === "student" && task.status === "Assigned") task.status = "In Progress";
-
-    // Check if progress is 100% → determine next step
+    if (req.user.role === "student" && (task.status === "Assigned" || wasRejected)) {
+      task.status = "In Progress";
+    }
+    if (task.adminApproved && progress < 100) {
+      task.adminApproved = false;
+    }
     if (progress === 100) {
       const project = await Project.findById(task.project._id);
       const teamLeadId = project.teamLead?.toString();
@@ -486,13 +473,10 @@ router.put("/:id/progress", protect, async (req, res) => {
       const isTLCompletingOwnTask = req.user.role === "teamLead" && req.user._id.toString() === teamLeadId;
 
       if (assignedToTL && isTLCompletingOwnTask) {
-        // TL completing own task → goes to Admin Approval
         task.status = "Pending Admin Approval";
       } else if (assignedToTL) {
-        // Multiple students including TL → Admin approves TL portion first
         task.status = "Pending Admin Approval";
       } else {
-        // Only students → goes to TL approval
         task.status = "Pending TL Approval";
       }
     }
@@ -513,12 +497,44 @@ router.put("/:id/progress", protect, async (req, res) => {
   }
 });
 
+router.put("/:id/deny-start", protect, async (req, res) => {
+  try {
+    const { rejectionReason } = req.body;
 
-/* 
----------------------------------------------
-🟡 REQUEST TASK START APPROVAL (Student)
----------------------------------------------
-*/
+    const task = await Task.findById(req.params.id).populate("project");
+    if (!task) return res.status(404).json({ message: "Task not found." });
+
+    const isAdmin = req.user.role === "admin";
+    const isProjectLead =
+      task.project?.teamLead?.toString() === req.user._id.toString();
+
+    if (!isAdmin && !isProjectLead) {
+      return res.status(403).json({ message: "Access denied." });
+    }
+
+    if (task.status !== "Pending Start Approval") {
+      return res
+        .status(400)
+        .json({ message: "Task is not pending start approval." });
+    }
+
+    task.status = "Missed";
+    task.rejectionReason = rejectionReason || "";
+    task.rejectedAt = new Date();
+    await task.save();
+
+    await task.populate([
+      { path: "assignedTo", select: "name email" },
+      { path: "assignedBy", select: "name email" },
+    ]);
+
+    res.json({ success: true, message: "Start request denied.", task });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 router.put("/:id/request-start", protect, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
@@ -541,8 +557,6 @@ router.put("/:id/request-start", protect, async (req, res) => {
         message: "Already requested admin approval."
       });
     }
-
-    // ✅ IMPORTANT: Missed tasks ARE allowed to request admin approval
     task.status = "Pending Start Approval";
     await task.save();
 
@@ -564,11 +578,6 @@ router.put("/:id/request-start", protect, async (req, res) => {
 });
 
 
-/* 
----------------------------------------------
-🟡 ADMIN APPROVE START (Admin only)
----------------------------------------------
-*/
 router.put("/:id/admin-approve-start", protect, async (req, res) => {
   try {
     if (req.user.role !== "admin") return res.status(403).json({ message: "Admins only" });
@@ -591,11 +600,18 @@ router.put("/:id/admin-approve-start", protect, async (req, res) => {
     }
 
     task.adminApproved = true;
-    task.status = "Assigned"; // or "In Progress" if you want
-    task.dueDate = dueDateObj; // ✅ set new future due date
-    task.startDate = null;       // reset start
-    task.completedDate = null;   // reset completion
-    task.progress = 0;           // ✅ reset progress to 0
+    task.dueDate = dueDateObj; 
+    task.completedDate = null;  
+
+    if ((task.progress ?? 0) > 0) {
+      task.status = "In Progress"; 
+    } else {
+      task.status = "Assigned";
+      task.startDate = null;
+    }
+
+    task.rejectionReason = "";
+    task.rejectedAt = null;
 
     await task.save();
 
@@ -610,19 +626,9 @@ router.put("/:id/admin-approve-start", protect, async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
-/* 
----------------------------------------------
-🟢 ASSIGN MORE STUDENTS TO EXISTING TASK (Admin only)
----------------------------------------------
-*/
-/* 
----------------------------------------------
-🟢 ASSIGN MORE STUDENTS TO EXISTING TASK (Admin only)
----------------------------------------------
-*/
+
 router.patch("/:id/assign", protect, async (req, res) => {
   try {
-    // Check if user has permission to manage this task
     const allowed = await canManageTask(req.user, req.params.id);
     if (!allowed) {
       return res.status(403).json({ success: false, message: "Access denied." });
@@ -640,13 +646,11 @@ router.patch("/:id/assign", protect, async (req, res) => {
     const task = await Task.findById(req.params.id);
     if (!task) return res.status(404).json({ success: false, message: "Task not found." });
 
-    // Ensure all assigned students belong to this project
     const users = await User.find({ email: { $in: assignedTo }, projects: task.project });
     if (users.length !== assignedTo.length) {
       return res.status(400).json({ success: false, message: "All assigned students must belong to this project." });
     }
 
-    // 🚨 New Rule: TL cannot be assigned along with other students
     const projectDoc = await Project.findById(task.project);
     if (projectDoc?.teamLead) {
       const tlEmail = projectDoc.teamLead.toString();
@@ -658,7 +662,6 @@ router.patch("/:id/assign", protect, async (req, res) => {
       }
     }
 
-    // Add new students to task
     const userIds = users.map(u => u._id);
     // BEFORE updating
     if (task.status === "Completed") {
@@ -684,12 +687,6 @@ router.patch("/:id/assign", protect, async (req, res) => {
   }
 });
 
-
-/* 
----------------------------------------------
-🟡 REQUEST TASK APPROVAL (Student)
----------------------------------------------
-*/
 router.put("/:id/request-approval", protect, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id).populate("project assignedTo");
@@ -710,7 +707,6 @@ router.put("/:id/request-approval", protect, async (req, res) => {
     const isStudentRequesting = req.user.role === "student";
 
     if (isStudentRequesting && assignedToTL && task.status !== "Pending Admin Approval") {
-      // Students cannot request approval while TL portion pending Admin approval
       return res.status(400).json({
         success: false,
         message: "Cannot request approval. TL portion is pending Admin approval."
@@ -740,11 +736,6 @@ router.put("/:id/request-approval", protect, async (req, res) => {
   }
 });
 
-/* 
----------------------------------------------
-🔁 RESET / EXTEND MISSED TASK (Admin only)
----------------------------------------------
-*/
 router.put("/:id/reset-missed", protect, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -770,11 +761,18 @@ router.put("/:id/reset-missed", protect, async (req, res) => {
     }
 
     task.adminApproved = true;
-    task.status = "Assigned"; // or "In Progress" if you want
-    task.dueDate = dueDateObj; // ✅ set new future due date
-    task.startDate = null;       // reset start
-    task.completedDate = null;   // reset completion
-    task.progress = 0;           // ✅ reset progress to 0
+    task.dueDate = dueDateObj;
+    task.completedDate = null;
+
+    if ((task.progress ?? 0) > 0) {
+      task.status = "In Progress";
+    } else {
+      task.status = "Assigned";
+      task.startDate = null;
+    }
+
+    task.rejectionReason = "";
+    task.rejectedAt = null;       
 
     await task.save();
 
@@ -790,11 +788,6 @@ router.put("/:id/reset-missed", protect, async (req, res) => {
   }
 });
 
-/* 
----------------------------------------------
-🟦 FULL TASK UPDATE (Admin or Team Lead)
----------------------------------------------
-*/
 router.patch("/:id", protect, async (req, res) => {
   try {
     const allowed = await canManageTask(req.user, req.params.id);
@@ -816,7 +809,6 @@ router.patch("/:id", protect, async (req, res) => {
     if (progress !== undefined) updateData.progress = progress;
     if (status !== undefined) updateData.status = status;
 
-    // Handle assignedTo array
     if (assignedTo !== undefined) {
       if (!Array.isArray(assignedTo)) {
         return res.status(400).json({ success: false, message: "assignedTo must be an array of emails." });
@@ -826,8 +818,19 @@ router.patch("/:id", protect, async (req, res) => {
       updateData.assignedTo = users.map(u => u._id);
     }
 
-    // ---------- RESET STATUS FOR MISSED TASKS ----------
-    // ---------- RESET STATUS FOR MISSED TASKS ----------
+    if (
+      updateData.status &&
+      ["Assigned", "In Progress"].includes(updateData.status) &&
+      ["Missed", "Rejected", "Pending Start Approval"].includes(existingTask.status)
+    ) {
+      const targetDueDate = updateData.dueDate ? new Date(updateData.dueDate) : existingTask.dueDate;
+      if (isNaN(targetDueDate.getTime()) || targetDueDate <= new Date()) {
+        return res.status(400).json({
+          success: false,
+          message: "New due date must be in the future to reactivate a missed task.",
+        });
+      }
+    }
     const isTaskMissed = (task) => {
       if (task.adminApproved) return false; // approved tasks never missed
       const due = new Date(task.dueDate);
@@ -845,9 +848,11 @@ router.patch("/:id", protect, async (req, res) => {
       const now = new Date();
       if (newDueDate > now) {
         updateData.status = "Assigned";
-        updateData.progress = 0; // <-- reset explicitly
+        updateData.progress = 0;
         updateData.startDate = null;
         updateData.completedDate = null;
+        updateData.rejectionReason = "";
+        updateData.rejectedAt = null;
       }
     }
 
@@ -856,8 +861,6 @@ router.patch("/:id", protect, async (req, res) => {
         { path: "assignedTo", select: "name email" },
         { path: "assignedBy", select: "name email" },
       ]);
-
-    // ✅ Fix completedDate if status was updated to Completed
     if (updateData.status === "Completed" && !updatedTask.completedDate) {
       updatedTask.completedDate = new Date();
       await updatedTask.save();
@@ -870,14 +873,10 @@ router.patch("/:id", protect, async (req, res) => {
   }
 });
 
-/* 
----------------------------------------------
-📕 DELETE TASK (Admin only)
----------------------------------------------
-*/
+
 router.delete("/:id", protect, async (req, res) => {
   const allowed = await canManageTask(req.user, req.params.id);
-  console.log("REQ USER:", req.user);               // 👈 Add here
+  console.log("REQ USER:", req.user);               
   console.log("TASK/PROJECT ID:", req.params.id);
   if (!allowed) {
     return res.status(403).json({ success: false, message: "Access denied." });

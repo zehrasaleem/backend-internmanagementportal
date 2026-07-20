@@ -1,5 +1,6 @@
 import Timetable from "../models/timetable.js";
 import Attendance from "../models/Attendance.js";
+import User from "../models/User.js";
 
 /* ======================================================
    ATTENDANCE CONFIG
@@ -562,15 +563,40 @@ export const getAdminDailyReport = async (req, res) => {
       });
     }
 
-    await createMissingAbsencesForDate(selectedDate, nowInfo);
+   const emailRegex = new RegExp(`^${req.user.email}$`, "i");
 
-    const timetables = await Timetable.find()
-      .populate("student", "name email picture")
-      .sort({ updatedAt: -1 });
+// Get only students assigned to this admin
+const students = await User.find({
+  role: "student",
+  supervisorEmail: emailRegex,
+  $or: [
+    { approvalStatus: "approved" },
+    { approvalStatus: { $exists: false } },
+  ],
+}).select("_id name email picture");
 
-    const attendanceRecords = await Attendance.find({
-      dateKey: selectedDate,
-    });
+const studentIds = students.map((student) => student._id);
+
+// Create absent records only for this admin's students
+for (const studentId of studentIds) {
+  await createMissingAbsencesForDate(
+    selectedDate,
+    nowInfo,
+    studentId
+  );
+}
+
+// Load only this admin's students' timetables
+const timetables = await Timetable.find({
+  student: { $in: studentIds },
+})
+  .populate("student", "name email picture")
+  .sort({ updatedAt: -1 });
+
+   const attendanceRecords = await Attendance.find({
+  dateKey: selectedDate,
+  student: { $in: studentIds },
+});
 
     const attendanceMap = new Map(
       attendanceRecords.map((record) => [

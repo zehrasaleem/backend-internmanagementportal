@@ -153,7 +153,7 @@ router.get("/", async (_req, res) => {
   }
 });
 
-router.get("/students", getAllStudents);
+router.get("/students", protect, getAllStudents);
 
 /* ---------------------- STUDENT SIGNUP REQUESTS ---------------------- */
 router.get("/signup-requests", protect, async (req, res) => {

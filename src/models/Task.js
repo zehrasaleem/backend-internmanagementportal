@@ -49,7 +49,13 @@ const taskSchema = new mongoose.Schema(
       min: 0,
       max: 100,
     },
-     adminApproved: { type: Boolean, default: false },
+
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    approvedByRole: { type: String, enum: ["admin", "teamLead", null], default: null },
+
+    rejectionReason: { type: String, default: "" },
+    rejectedAt: { type: Date, default: null },
+    adminApproved: { type: Boolean, default: false },
 
     startDate: { type: Date, default: null },
     completedDate: { type: Date, default: null },

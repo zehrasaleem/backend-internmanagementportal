@@ -1,8 +1,10 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+import dns from "node:dns";
 import path from "path";
 import { fileURLToPath } from "url";
 
+dns.setServers(["8.8.8.8", "1.1.1.1"]);
 // ✅ Ensure dotenv loads the correct .env file path manually
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,7 +21,8 @@ export async function connectMongo() {
     await mongoose.connect(process.env.MONGODB_URI);
     console.log("✅ Connected to MongoDB (Mongoose)");
   } catch (err) {
-    console.error("❌ MongoDB connection failed:", err.message);
+    console.error("❌ MongoDB connection failed:");
+    console.error(err);
     process.exit(1);
   }
 }

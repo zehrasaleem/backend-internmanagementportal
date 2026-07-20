@@ -45,7 +45,7 @@ export const createProject = async (req, res) => {
       status: status || "todo",
       assignedTo: [],
       teamLead: leadId,
-      createdBy: req.user?._id || null,
+      createdBy: req.user?._id || null, // Sets the creator!
     });
 
     const saved = await project.save();
@@ -61,10 +61,27 @@ export const createProject = async (req, res) => {
   }
 };
 
-// 🟡 GET ALL PROJECTS
+// 🟡 GET ALL PROJECTS (STRICTLY FILTERED BY CREATOR)
 export const getProjects = async (req, res) => {
   try {
-    const projects = await Project.find({})
+    let query = {};
+
+    // If the logged-in user is an admin/supervisor
+    if (req.user && req.user.role !== "student") {
+      // ✅ STRICT ISOLATION: Admin only sees projects they explicitly created
+      query = { createdBy: req.user._id };
+      
+    } else if (req.user && req.user.role === "student") {
+      // If a student fetches this, only show projects they are a part of
+      query = {
+        $or: [
+          { teamLead: req.user._id },
+          { assignedTo: req.user._id },
+        ],
+      };
+    }
+
+    const projects = await Project.find(query)
       .populate("assignedTo", "name email")
       .populate("createdBy", "name email")
       .populate("teamLead", "name email")
@@ -90,6 +107,11 @@ export const getProject = async (req, res) => {
 
     if (!project) return res.status(404).json({ message: "Project not found" });
 
+    // Security Check
+    if (req.user.role !== "student" && project.createdBy?._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "You can only view projects you created." });
+    }
+
     res.status(200).json(project);
   } catch (err) {
     console.error("❌ Error fetching project:", err);
@@ -102,6 +124,14 @@ export const updateProject = async (req, res) => {
   try {
     const id = cleanId(req.params.id);
     if (!id) return res.status(400).json({ message: "Invalid project ID" });
+
+    // ✅ Security check: Verify the admin created this project before allowing updates
+    const existingProject = await Project.findById(id);
+    if (!existingProject) return res.status(404).json({ message: "Project not found" });
+
+    if (req.user.role !== "student" && existingProject.createdBy?.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "You can only edit projects you created." });
+    }
 
     const updates = req.body;
 
@@ -117,7 +147,7 @@ export const updateProject = async (req, res) => {
       updates.title = updates.title.trim();
     }
 
-    // ✅ Validate teamLead if provided (ROLE CHECK ADDED)
+    // Validate teamLead if provided
     if (updates.teamLead) {
       const lead = await User.findById(updates.teamLead);
       if (!lead) return res.status(404).json({ message: "Team lead not found" });
@@ -135,8 +165,6 @@ export const updateProject = async (req, res) => {
       .populate("createdBy", "name email")
       .populate("teamLead", "name email");
 
-    if (!project) return res.status(404).json({ message: "Project not found" });
-
     res.status(200).json(project);
   } catch (err) {
     console.error("❌ Error updating project:", err);
@@ -150,8 +178,15 @@ export const deleteProject = async (req, res) => {
     const id = cleanId(req.params.id);
     if (!id) return res.status(400).json({ message: "Invalid project ID" });
 
-    const project = await Project.findByIdAndDelete(id);
-    if (!project) return res.status(404).json({ message: "Project not found" });
+    // ✅ Security check: Verify the admin created this project before allowing deletion
+    const existingProject = await Project.findById(id);
+    if (!existingProject) return res.status(404).json({ message: "Project not found" });
+
+    if (req.user.role !== "student" && existingProject.createdBy?.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "You can only delete projects you created." });
+    }
+
+    await Project.findByIdAndDelete(id);
 
     res.status(200).json({ message: "Project deleted successfully" });
   } catch (err) {
@@ -159,6 +194,7 @@ export const deleteProject = async (req, res) => {
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
+
 // 🔵 GET PROJECTS WHERE CURRENT USER IS TEAM LEAD
 export const getMyLeadProjects = async (req, res) => {
   try {
@@ -183,7 +219,7 @@ export const modifyAssignees = async (req, res) => {
     const { userId, action } = req.body;
     if (!userId) return res.status(400).json({ message: "userId is required" });
 
-    // ✅ ROLE CHECK ADDED
+    // Role check for the student being assigned
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -193,6 +229,11 @@ export const modifyAssignees = async (req, res) => {
 
     const project = await Project.findById(id);
     if (!project) return res.status(404).json({ message: "Project not found" });
+
+    // ✅ Security check: Verify admin created the project before they can assign students to it
+    if (req.user.role !== "student" && project.createdBy?.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "You can only manage assignees for projects you created." });
+    }
 
     if (action === "assign") {
       if (!project.assignedTo.includes(userId)) project.assignedTo.push(userId);

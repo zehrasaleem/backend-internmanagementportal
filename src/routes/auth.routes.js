@@ -144,6 +144,31 @@ router.get("/admin-signup/reject", async (req, res) => {
 });
 
 /* ===========================
+   GET /auth/admins (✅ ADDED: Fetch admins for the frontend signup dropdown)
+=========================== */
+router.get("/admins", async (req, res) => {
+  try {
+    // Fetch all approved admin users
+    const admins = await User.find({
+      role: "admin",
+      isVerified: true,
+      $or: [
+        { approvalStatus: "approved" },
+        { approvalStatus: { $exists: false } },
+      ],
+    }).select("name email role");
+
+    res.status(200).json({
+      success: true,
+      admins,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching admins:", error);
+    res.status(500).json({ message: "Failed to fetch admins" });
+  }
+});
+
+/* ===========================
    GET /auth/me  (JWT → user)
 =========================== */
 router.get("/me", async (req, res) => {

@@ -5,7 +5,7 @@ import Project from "../models/Project.js";
  * canManageTask
  *
  * ✅ Admin:
- *   - Can manage everything
+ *   - Can manage tasks ONLY in projects they created
  *
  * ✅ Team Lead:
  *   - Can CREATE tasks in projects they lead
@@ -19,9 +19,7 @@ import Project from "../models/Project.js";
  * @param {Boolean} isProjectId - true when creating task
  */
 export const canManageTask = async (user, taskIdOrProjectId, isProjectId = false) => {
-  if (user.role === "admin") return true;
-
-  // Resolve project
+  // Resolve project first — needed for both admin and team lead checks now
   let project;
   if (isProjectId) {
     project = await Project.findById(taskIdOrProjectId);
@@ -33,13 +31,9 @@ export const canManageTask = async (user, taskIdOrProjectId, isProjectId = false
     if (!project) return false;
   }
 
-  // ✅ Safe to log now
-  console.log({
-    userId: user._id,
-    projectId: project._id,
-    projectLead: project.teamLead,
-    allowed: project.teamLead?.equals(user._id)
-  });
+  if (user.role === "admin") {
+    return project.createdBy?.toString() === user._id.toString();
+  }
 
   // Check if user is team lead of this project
   if (project.teamLead?.equals(user._id)) return true;

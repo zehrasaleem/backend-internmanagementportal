@@ -1,3 +1,4 @@
+import User from "../models/User.js";
 import express from "express";
 import Timetable from "../models/timetable.js";
 import auth from "../middleware/auth.js";
@@ -200,7 +201,24 @@ router.get("/all", auth, async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const timetables = await Timetable.find().populate("student", "name email");
+    // Find only students assigned to this admin
+    const emailRegex = new RegExp(`^${req.user.email}$`, "i");
+
+    const students = await User.find({
+      role: "student",
+      supervisorEmail: emailRegex,
+      $or: [
+        { approvalStatus: "approved" },
+        { approvalStatus: { $exists: false } },
+      ],
+    }).select("_id");
+
+    const studentIds = students.map((s) => s._id);
+
+    // Get only those students' timetables
+    const timetables = await Timetable.find({
+      student: { $in: studentIds },
+    }).populate("student", "name email supervisorEmail");
 
     res.json(timetables);
   } catch (err) {
@@ -222,6 +240,21 @@ router.put("/assign", auth, async (req, res) => {
     if (!timetable) {
       return res.status(404).json({ message: "Timetable not found" });
     }
+
+    // Verify that this timetable belongs to one of the logged-in admin's students
+const student = await User.findById(timetable.student).select("supervisorEmail");
+
+if (!student) {
+  return res.status(404).json({ message: "Student not found" });
+}
+
+const emailRegex = new RegExp(`^${req.user.email}$`, "i");
+
+if (!emailRegex.test(student.supervisorEmail || "")) {
+  return res.status(403).json({
+    message: "You are not authorized to manage this student's timetable.",
+  });
+}
 
     const baseSlot = timetable.slots.id(slotId);
 
@@ -303,6 +336,21 @@ router.post("/schedule", auth, async (req, res) => {
     if (!timetable) {
       return res.status(404).json({ message: "Timetable not found" });
     }
+
+    // Verify that this timetable belongs to one of the logged-in admin's students
+const student = await User.findById(timetable.student).select("supervisorEmail");
+
+if (!student) {
+  return res.status(404).json({ message: "Student not found" });
+}
+
+const emailRegex = new RegExp(`^${req.user.email}$`, "i");
+
+if (!emailRegex.test(student.supervisorEmail || "")) {
+  return res.status(403).json({
+    message: "You are not authorized to manage this student's timetable.",
+  });
+}
 
     const baseSlot = timetable.slots.id(slotId);
 
@@ -413,6 +461,8 @@ router.post("/cancel-meeting", auth, async (req, res) => {
     if (!timetable) {
       return res.status(404).json({ message: "Timetable not found" });
     }
+
+    
 
     const baseSlot = slotId ? timetable.slots.id(slotId) : null;
 

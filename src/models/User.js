@@ -61,8 +61,12 @@ const User = mongoose.model("User", userSchema);
 /* ------------------- GET ALL STUDENTS (FOR ADMIN) ------------------- */
 export const getAllStudents = async (req, res) => {
   try {
+    // ✅ Use regex to make the email matching case-insensitive
+    const emailRegex = new RegExp(`^${req.user.email}$`, "i");
+
     const students = await User.find({
       role: "student",
+      supervisorEmail: emailRegex, // This will match "Raza" and "raza" equally
       $or: [
         { approvalStatus: "approved" },
         { approvalStatus: { $exists: false } },
@@ -83,6 +87,5 @@ export const getAllStudents = async (req, res) => {
     });
   }
 };
-
 /* ------------------------- EXPORT ------------------------- */
 export default User;

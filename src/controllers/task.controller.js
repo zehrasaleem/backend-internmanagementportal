@@ -1,22 +1,14 @@
-// server/controllers/task.controller.js
 import Task from "../models/task.model.js";
 import User from "../models/User.js";
 
-/* 
---------------------------------------------------
-📘 CREATE NEW TASK (Supports Multiple Students by Name & Saves Project Name)
---------------------------------------------------
-*/
 export const createTask = async (req, res) => {
   try {
     const { title, subHeading, description, assignedTo, dueDate, status, project } = req.body;
 
-    // Validate assignedTo: should be array of student names
     if (!Array.isArray(assignedTo) || assignedTo.length === 0) {
       return res.status(400).json({ message: "Please assign at least one student." });
     }
 
-    // Lookup user IDs from names
     const users = await User.find({ name: { $in: assignedTo } });
     if (!users || users.length === 0) {
       return res.status(404).json({ message: "No matching students found." });
@@ -37,7 +29,6 @@ export const createTask = async (req, res) => {
       createdTasks.push(task);
     }
 
-    // Populate assignedTo with name/email before sending response
     const populatedTasks = await Task.find({ _id: { $in: createdTasks.map(t => t._id) } })
       .populate("assignedTo", "name email");
 
@@ -51,11 +42,6 @@ export const createTask = async (req, res) => {
   }
 };
 
-/* 
---------------------------------------------------
-📗 GET ALL TASKS
---------------------------------------------------
-*/
 export const getTasks = async (req, res) => {
   try {
     const tasks = await Task.find().populate("assignedTo", "name email");
@@ -66,11 +52,7 @@ export const getTasks = async (req, res) => {
   }
 };
 
-/* 
---------------------------------------------------
-📙 GET TASKS BY STUDENT ID
---------------------------------------------------
-*/
+
 export const getTasksByStudent = async (req, res) => {
   try {
     const { studentId } = req.params;
@@ -93,11 +75,6 @@ export const getTasksByStudent = async (req, res) => {
   }
 };
 
-/* 
---------------------------------------------------
-📕 UPDATE TASK STATUS
---------------------------------------------------
-*/
 export const updateTaskStatus = async (req, res) => {
   try {
     const { taskId, status } = req.body;
